@@ -11,6 +11,7 @@ from sklearn.feature_selection import SelectFromModel
 from sklearn import model_selection
 from sklearn import metrics
 
+
 #Machine Learning Algorithm (MLA) Selection and initialization
 CLF = [
     #Ensemble Methods
@@ -18,7 +19,7 @@ CLF = [
     ('bc', ensemble.BaggingClassifier()),
     ('etc',ensemble.ExtraTreesClassifier()),
     ('gbc', ensemble.GradientBoostingClassifier()),
-    ('xgbc',xgb.XGBClassifier()),    #max_depth=5, n_estimators=50, learning_rate=0.05)
+    ('xgbc',xgb.XGBClassifier(max_depth=3)),  # xgb.XGBClassifier()),    #
     ('rfc', ensemble.RandomForestClassifier(n_estimators = 50)),
 
     #Gaussian Processes
@@ -68,10 +69,10 @@ EST_PARAM_GRID = {  #'ada':  [{"base_estimator__criterion": ["gini", "entropy"],
                     #            'max_depth': [3,4,5, 8],
                     #            'min_samples_leaf': [30,50,70,100,150],
                     #            'max_features': [0.3, 0.1,0.5]}],
-                    'xgbc': [{  "max_depth":[3,4,5],
+                    'xgbc': [{  "max_depth":[3,4],
                                 "n_estimators":[10,20,30,40,50,60,70,80,100],
                                 "learning_rate":[0.01,0.05,0.1,0.5,1]}],
-                    #'rfc':  [{  "max_depth": [3],
+                    #'rfc':  [{  "max_depth": [3,4],
                     #            "max_features": [0.2,0.3,0.4,0.5,0.6,0.8],
                     #            "min_samples_split": [5, 10, 20, 50, 100],
                     #            "min_samples_leaf": [3, 5, 10, 20, 50, 100],
@@ -214,7 +215,8 @@ def ensemble_model(data, target, test, all_columns, featureFromModel=False, n_sp
     print(MLA_compare.iloc[0]["MLA Parameters"])
     #loc[0]: 原始index为0，by label;    iloc[0]:当前index为0，by postion
     #MLA_compare.head(n=1) return DataFrame, MLA_compare.loc[alg_index] return Series
-    ensemble_name = MLA_compare.iloc[0]['MLA Name'][:5] + MLA_compare.iloc[0]['MLA Parameters'].replace(':','_') + "_f{}".format(len(MLA_compare.iloc[0]['Selected Columns']))
+    feature_name = "_FM{}" if featureFromModel else "_fk{}"
+    ensemble_name = MLA_compare.iloc[0]['MLA Name'][:5] + MLA_compare.iloc[0]['MLA Parameters'].replace(':','_') + feature_name.format(len(MLA_compare.iloc[0]['Selected Columns']))
     model = MLA_compare.iloc[0]["MLA Mode"]
     test_data = MLA_compare.iloc[0]['TestData']
     return (model, model.predict(test_data), ensemble_name)

@@ -238,6 +238,9 @@ test_M = test.as_matrix()
 featureFromModel = False
 if not featureFromModel: 
     selected_feature_num = 10
+    if selected_feature_num > len(mangled_columns):
+        print("featue num exceed prepared!")
+        exit()
     selector,selected_columns = get_k_best_feature(train, target, selected_feature_num)
     combined_selected = selector.transform(combined_encoded)
     train_S = combined_selected[:train.shape[0]]
