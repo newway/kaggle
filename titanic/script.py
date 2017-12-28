@@ -56,6 +56,21 @@ def fix_outliers(df, col):
     print(df.describe())
     return df
 
+def process_ticket(combined):
+    # a function that extracts each prefix of the ticket, returns 'XXX' if no prefix (i.e the ticket is a digit)
+    def cleanTicket(ticket):
+        ticket = ticket.replace('.','')
+        ticket = ticket.replace('/','')
+        ticket = ticket.split()
+        ticket = map(lambda t : t.strip(), ticket)
+        ticket = list(filter(lambda t : not t.isdigit(), ticket))
+        if len(ticket) > 0:
+            return ticket[0]
+        else:
+            return 'XXX'
+
+    combined['Ticket'] = combined['Ticket'].map(cleanTicket)
+
 def is_number(s):
     try:
         float(s)
@@ -149,18 +164,26 @@ def TitanicImputer(X):
     #print(grouped_mode_cabin.loc[2]['Cabin'][0])
     #print(grouped_mode_cabin.loc[3]['Cabin'][0])
     process_cabin(X, grouped_mode_cabin)
+    #X['Cabin'].fillna(X['Cabin'].mode()[0], inplace=True)
     #print("check NaN after Imputer:\n", X.isnull().any())
     if X.isnull().any().any():
         print('Nan After Imputer, exit!', X.isnull().any())
         exit()
     return X
 
+def process_familysize(s):
+    if s==1:
+        return 'a'
+    elif 2<=s<=4:
+        return 's'
+    else:
+        return 'b'
 #clean data, and extract features 
 def DataFrameMangle(X):
     #global mangled_columns
     X['FamilySize'] = X['SibSp'] + X['Parch'] + 1
-    X['IsAlone'] = 1
-    X['IsAlone'].loc[X['FamilySize']>1] = 0
+    # introducing other features based on the family size
+    X['FamilySize'] = X['FamilySize'].apply(process_familysize)
     #X['Fare'] = fix_outliers(X, 'Fare')
     #qcut: 按区间内的样本数均分，cut: 按区间均分
     X["FareBin"] = pd.qcut(X["Fare"], 4, labels=False)  #X["FareBin"] = pd.qcut(X["Fare"], 4, labels=["a", "b", "c", "d"]/False)
@@ -237,7 +260,7 @@ test_M = test.as_matrix()
 
 featureFromModel = False
 if not featureFromModel: 
-    selected_feature_num = 10
+    selected_feature_num = 9
     if selected_feature_num > len(mangled_columns):
         print("featue num exceed prepared!")
         exit()
