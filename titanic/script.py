@@ -27,7 +27,7 @@ from sklearn.base import TransformerMixin
 from sklearn.preprocessing import LabelEncoder, OneHotEncoder
 from collections import Counter
 
-def fix_outliers(df, col):
+def get_outlier_index(df, col):
     """
     Takes a dataframe df of features and returns a list of the indices
     corresponding to the observations containing more than n outliers according
@@ -58,18 +58,13 @@ def fix_outliers(df, col):
 
 def process_ticket(combined):
     # a function that extracts each prefix of the ticket, returns 'XXX' if no prefix (i.e the ticket is a digit)
-    def cleanTicket(ticket):
-        ticket = ticket.replace('.','')
-        ticket = ticket.replace('/','')
-        ticket = ticket.split()
-        ticket = map(lambda t : t.strip(), ticket)
-        ticket = list(filter(lambda t : not t.isdigit(), ticket))
-        if len(ticket) > 0:
-            return ticket[0]
+    def prefixTicket(ticket):
+        if not ticket.isdigit():
+            return ticket.replace('.','').replace('/','').strip().split(' ')[0]
         else:
             return 'XXX'
 
-    combined['Ticket'] = combined['Ticket'].map(cleanTicket)
+    combined['Ticket'] = combined['Ticket'].apply(prefixTicket)
 
 def is_number(s):
     try:
@@ -188,9 +183,12 @@ def DataFrameMangle(X):
     #qcut: 按区间内的样本数均分，cut: 按区间均分
     X["FareBin"] = pd.qcut(X["Fare"], 4, labels=False)  #X["FareBin"] = pd.qcut(X["Fare"], 4, labels=["a", "b", "c", "d"]/False)
     X["AgeBin"] = pd.cut(X["Age"].astype(int), 5, labels=False)
+    process_ticket(X)
     X.drop('Name', axis=1, inplace=True)
     X.drop('Fare', axis=1, inplace=True)
     X.drop('Age', axis=1, inplace=True)
+    #X.drop('SibSp', axis=1, inplace=True)
+    #X.drop('Parch', axis=1, inplace=True)
     return X
 
 #encode label, adjust to estimator
@@ -204,8 +202,8 @@ def DataFrameEncode(X):
                 X.drop(col, axis=1, inplace=True)
         return X
     def LabelEncodeCategory(X):
-        le = LabelEncoder()     # this can only be used for tree-based estimator, because of no sense of order
         for col in X:
+            le = LabelEncoder()     # this can only be used for tree-based estimator, because of no sense of order
             if not is_number(X[col].iloc[0]):
                 X[col] = le.fit_transform(X[col])
         return X
@@ -223,7 +221,7 @@ def DataFrameLoad():
     test = pd.read_csv("input/test.csv", header=0)
     #print(train.info())
     #print(test.info())
-    feature_to_use = ["Pclass", "Name", "Sex", "Age", "SibSp", "Parch", "Fare", "Cabin", "Embarked"]
+    feature_to_use = ["Pclass", "Name", "Sex", "Age", "SibSp", "Parch", "Fare", "Cabin", "Embarked", "Ticket"]
     combined = train[feature_to_use].append(test[feature_to_use])
     #print(train.describe())
     #print(test.describe())
