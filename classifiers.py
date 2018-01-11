@@ -211,11 +211,11 @@ def ensemble_model(data, target, test, all_columns, featureFromModel=False, n_sp
     MLA_compare.sort_values(by = ['MLA Test Accuracy Mean', 'Test Train Diff', 'MLA Test Accuracy -3Std'], ascending = False, inplace = True)
     print_columns = MLA_columns[:-4]
     #print_columns.remove("MLA Parameters")
-    print(MLA_compare[print_columns], '\n')
+    print(MLA_compare[print_columns], '\n', MLA_compare.index)
     print(MLA_compare.iloc[0]["MLA Parameters"])
     #loc[0]: 原始index为0，by label;    iloc[0]:当前index为0，by postion
     #MLA_compare.head(n=1) return DataFrame, MLA_compare.loc[alg_index] return Series
-    feature_name = "_FM{}" if featureFromModel else "_fk{}"
+    feature_name = "_F{}"
     ensemble_name = MLA_compare.iloc[0]['MLA Name'][:5] + MLA_compare.iloc[0]['MLA Parameters'].replace(':','_') + feature_name.format(len(MLA_compare.iloc[0]['Selected Columns']))
     model = MLA_compare.iloc[0]["MLA Mode"]
     test_data = MLA_compare.iloc[0]['TestData']

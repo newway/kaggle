@@ -4,13 +4,15 @@ def ignore_warn(*args, **kwargs):
 warnings.warn = ignore_warn #ignore annoying warning (from sklearn and seaborn)
 import pandas as pd
 import numpy as np
-from sklearn.linear_model import ElasticNet, Lasso,  BayesianRidge, LassoLarsIC, Ridge
-from sklearn.ensemble import RandomForestRegressor,  GradientBoostingRegressor
+import time
+from sklearn.linear_model import LinearRegression, ElasticNet, Lasso,  BayesianRidge, LassoLarsIC, Ridge, PassiveAggressiveRegressor, SGDRegressor
+from sklearn import svm, tree, neighbors, gaussian_process
+from sklearn.ensemble import GradientBoostingRegressor,AdaBoostRegressor,BaggingRegressor, ExtraTreesRegressor, RandomForestRegressor
 from sklearn.kernel_ridge import KernelRidge
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import RobustScaler
 from sklearn.base import BaseEstimator, TransformerMixin, RegressorMixin, clone
-from sklearn.model_selection import KFold, cross_val_score, train_test_split
+from sklearn.model_selection import KFold, cross_val_score, train_test_split, cross_validate, GridSearchCV
 from sklearn.metrics import mean_squared_error
 import xgboost as xgb
 import lightgbm as lgb
@@ -36,6 +38,165 @@ model_lgb = lgb.LGBMRegressor(objective='regression',num_leaves=5,
                               bagging_freq = 5, feature_fraction = 0.2319,
                               feature_fraction_seed=9, bagging_seed=9,
                               min_data_in_leaf =6, min_sum_hessian_in_leaf = 11)
+REG = [
+    #GLM - remove linear models, since this is a regressor algorithm
+    ('brr', BayesianRidge()),
+    ('enet', ElasticNet()),
+    ('lasso', Lasso()),
+    ('lr', LinearRegression()),
+    ('par', PassiveAggressiveRegressor()),
+    ('rr', Ridge()),
+    ('sgd', SGDRegressor()),
+
+    #Gaussian Processes
+    ('gpr', gaussian_process.GaussianProcessRegressor()),
+
+    #Kernel Ridge Regressor
+    ('krr', KernelRidge()),
+
+    #Ensemble Methods
+    ('ada', AdaBoostRegressor(tree.DecisionTreeRegressor())),
+    ('bag', BaggingRegressor()),
+    ('etr',ExtraTreesRegressor()),
+    ('gbr', GradientBoostingRegressor()),
+    ('xgbr',xgb.XGBRegressor(max_depth=3)),  # xgb.XGBRegressor()),    #
+    ('rfr', RandomForestRegressor(n_estimators = 50)),
+
+    #Nearest Neighbor
+    ('knr', neighbors.KNeighborsRegressor(n_neighbors = 3)),
+
+    #SVM
+    ('svr', svm.SVR(kernel='rbf', gamma=0.1)),
+    ('lsvr', svm.LinearSVR()),
+
+    #Trees
+    ('dtr', tree.DecisionTreeRegressor()),
+    ('etr2', tree.ExtraTreeRegressor()),
+]
+ESTS_PARAM_GRID = {
+    'lasso':    [{'alpha': [0.0005], 'random_state':[1]}],     # first model is used for meta model in StackingAveragedModels
+    'xgbr':     [{'colsample_bytree':[0.4603], 'gamma':[0.0468],
+                    'learning_rate':[0.05], 'max_depth':[3],
+                    'min_child_weight':[1.7817], 'n_estimators':[2200],
+                    'reg_alpha':[0.4640], 'reg_lambda':[0.8571],
+                    'subsample':[0.5213], 'silent':[1],
+                    'random_state':[7], 'nthread':[-1]}],
+    'enet':     [{'alpha':[0.0005], 'l1_ratio':[.9], 'random_state':[3]}],
+    'krr':      [{'alpha':[0.6], 'kernel':['polynomial'], 'degree':[2], 'coef0':[2.5]}],
+    'gbr':      [{'n_estimators':[3000], 'learning_rate':[0.05],
+                                   'max_depth':[4], 'max_features':['sqrt'],
+                                   'min_samples_leaf':[15], 'min_samples_split':[10],
+                                   'loss':['huber'], 'random_state':[5]}],
+}
+
+MLA_columns = ['Name', 'Test Score Mean', 'Train Score Mean', 'Test Train Diff', 'Test Score +-3Std', 'Parameters', 'Selected Columns', 'Fit Time', 'TrainData','TestData','Mode']
+def ensemble_regression(data, target, test, all_columns, featureFromModel=False, cv_split=5, score_f='neg_mean_squared_error', EST_PARAM_GRID=ESTS_PARAM_GRID, **kw):
+    #cv_split = model_selection.ShuffleSplit(n_splits = n_splits, test_size = testpart, train_size = trainpart, random_state = 0 ) # run model 10x with 60/30 split intentionally leaving out 10
+    #create table to compare MLA
+    MLA_compare = pd.DataFrame(columns = MLA_columns)
+    #index through REG and save performance to table
+    row_index = 0
+    base_ests = []
+    for est in REG:
+        name, alg = est
+        if name not in EST_PARAM_GRID:
+            continue
+        print(name)
+        if featureFromModel:
+            sfMode, selected_columns = get_feature_by_mode(alg, data, target, all_columns)
+            MLA_compare.loc[row_index, 'TrainData'] = sfMode.transform(data)
+            MLA_compare.loc[row_index, 'TestData'] = sfMode.transform(test)
+            MLA_compare.loc[row_index, 'Selected Columns'] = [ all_columns[i] for i in selected_columns]
+        else:
+            MLA_compare.loc[row_index, 'TrainData'] = data
+            MLA_compare.loc[row_index, 'TestData'] = test
+            MLA_compare.loc[row_index, 'Selected Columns'] = all_columns.tolist()
+        param_grid = EST_PARAM_GRID[name]
+        n_features = len(MLA_compare.loc[row_index]['Selected Columns'])
+        for pg in param_grid:
+            if 'max_features' in pg:
+                max_feature_l = pg['max_features']
+                pg['max_features'] = [x for x in max_feature_l if not isinstance(x, int) or x<=n_features ]       #filter(lambda x: x<=len(n_features), max_feature_l)
+
+        tune_model = GridSearchCV(alg, param_grid=param_grid, scoring = score_f, cv=cv_split, return_train_score=True, n_jobs= 4)
+        tune_model = tune_model.fit(MLA_compare.loc[row_index, 'TrainData'], target)
+        cv_results = tune_model.cv_results_
+        best_index = tune_model.best_index_     # index of best param
+        MLA_compare.loc[row_index, 'Parameters'] = str(tune_model.best_params_).replace(" ","")
+        MLA_compare.loc[row_index, 'Name'] = alg.__class__.__name__
+        MLA_compare.loc[row_index, 'Mode'] = tune_model.best_estimator_
+        try :
+            MLA_compare.loc[row_index, 'Mode'].coef_
+            coef = pd.Series(tune_model.best_estimator_.coef_, index = all_columns)
+            MLA_compare.loc[row_index, 'Selected Columns'] = coef[coef!=0].index.tolist()
+            print(name," coef >0 :", len(MLA_compare.loc[row_index, 'Selected Columns']))
+        except (AttributeError):
+            pass
+        MLA_compare.loc[row_index, 'Fit Time'] = cv_results.get('mean_fit_time')[best_index]
+        MLA_compare.loc[row_index, 'Train Score Mean'] = cv_results.get('mean_train_score')[best_index]
+        MLA_compare.loc[row_index, 'Test Score Mean'] = cv_results.get('mean_test_score')[best_index]   # == tune_model.best_score_
+        MLA_compare.loc[row_index, 'Test Train Diff'] = MLA_compare.loc[row_index, 'Test Score Mean'] - MLA_compare.loc[row_index, 'Train Score Mean']
+        MLA_compare.loc[row_index, 'Test Score +-3Std'] = (-MLA_compare.loc[row_index, 'Test Score Mean']-3*cv_results.get('std_test_score')[best_index], -MLA_compare.loc[row_index, 'Test Score Mean']+3*cv_results.get('std_test_score')[best_index])   #let's make +-3Std minus for ascending order
+
+        base_ests.append((name, tune_model.best_estimator_))
+        row_index+=1
+
+    print('average ests number:', len(base_ests))
+    if len(base_ests) >= 2:
+        avg_base = [y for x,y in base_ests]
+        alg = AveragingModels(models=avg_base)
+        alg.fit(data, target)
+        MLA_compare.loc[row_index, 'Parameters'] = 'average'
+        MLA_compare.loc[row_index, 'Name'] = 'AverageModel'
+        MLA_compare.loc[row_index, 'Mode'] = alg
+        MLA_compare.loc[row_index, 'Selected Columns'] = all_columns.tolist()
+        #MLA_compare.loc[row_index, 'Fit Time'] = alg.__fittime__
+        cv_results = cross_validate(alg, data, target, scoring = score_f, cv=cv_split, return_train_score=True, n_jobs= 4)
+        MLA_compare.loc[row_index, 'Fit Time'] = cv_results['fit_time'].mean()
+        MLA_compare.loc[row_index, 'Train Score Mean'] = cv_results['train_score'].mean()
+        MLA_compare.loc[row_index, 'Test Score Mean'] = cv_results['test_score'].mean()
+        test_score_std = cv_results['test_score'].std()
+        MLA_compare.loc[row_index, 'Test Train Diff'] = MLA_compare.loc[row_index, 'Test Score Mean'] - MLA_compare.loc[row_index, 'Train Score Mean']
+        MLA_compare.loc[row_index, 'Test Score +-3Std'] = (-MLA_compare.loc[row_index, 'Test Score Mean']-3*test_score_std, -MLA_compare.loc[row_index, 'Test Score Mean']+3*test_score_std)
+        MLA_compare.loc[row_index, 'TestData'] = test
+        row_index+=1
+        stack_models = []
+        meta_model = meta_lasso
+        for x,y in base_ests:
+            if y.__class__.__name__ != meta_model.__class__.__name__:
+                stack_models.append(y)
+        #stack_models = [y for x,y in base_ests[1:]]
+        #meta_model = base_ests[0][1]
+        print("StackingAveragedModels base model:", len(stack_models), "\nmeta model:", meta_model)
+        alg = StackingAveragedModels(base_models=stack_models, meta_model=meta_model, cv=cv_split)
+        alg.fit(data, target)
+        MLA_compare.loc[row_index, 'Parameters'] = 'stack average'
+        MLA_compare.loc[row_index, 'Name'] = 'StackingAveragedModels'
+        MLA_compare.loc[row_index, 'Mode'] = alg
+        MLA_compare.loc[row_index, 'Selected Columns'] = all_columns.tolist()
+        #MLA_compare.loc[row_index, 'Fit Time'] = alg.__fittime__
+        cv_results = cross_validate(alg, data, target, scoring = score_f, cv=cv_split, return_train_score=True, n_jobs= 4)
+        MLA_compare.loc[row_index, 'Fit Time'] = cv_results['fit_time'].mean()
+        MLA_compare.loc[row_index, 'Train Score Mean'] = cv_results['train_score'].mean()
+        MLA_compare.loc[row_index, 'Test Score Mean'] = cv_results['test_score'].mean()
+        test_score_std = cv_results['test_score'].std()
+        MLA_compare.loc[row_index, 'Test Train Diff'] = MLA_compare.loc[row_index, 'Test Score Mean'] - MLA_compare.loc[row_index, 'Train Score Mean']
+        MLA_compare.loc[row_index, 'Test Score +-3Std'] = (-MLA_compare.loc[row_index, 'Test Score Mean']-3*test_score_std, -MLA_compare.loc[row_index, 'Test Score Mean']+3*test_score_std)
+        MLA_compare.loc[row_index, 'TestData'] = test
+        row_index+=1
+
+    # get the best mode
+    MLA_compare[['Train Score Mean','Test Score Mean']] = -1*MLA_compare[['Train Score Mean','Test Score Mean']]
+    MLA_compare.sort_values(by = ['Test Score Mean', 'Test Train Diff'], ascending = True, inplace = True)
+    print_columns = MLA_columns[:-4]
+    print(MLA_compare[print_columns], '\n')
+    for i in range(row_index):
+        print(MLA_compare.iloc[i]["Parameters"])
+    feature_name = "_FM{}" if featureFromModel else "_fk{}"
+    ensemble_name = MLA_compare.iloc[0]['Name'][:5] + MLA_compare.iloc[0]['Parameters'].replace(':','_') + feature_name.format(len(MLA_compare.iloc[0]['Selected Columns']))
+    model = MLA_compare.iloc[0]["Mode"]
+    test_data = MLA_compare.iloc[0]['TestData']
+    return (model, model.predict(test_data), ensemble_name)
 
 class AveragingModels(BaseEstimator, RegressorMixin, TransformerMixin):
     def __init__(self, models):
@@ -47,11 +208,11 @@ class AveragingModels(BaseEstimator, RegressorMixin, TransformerMixin):
     # we define clones of the original models to fit the data in
     def fit(self, X, y):
         self.models_ = [clone(x) for x in self.models]
-        
+        #start = time.time()
         # Train cloned base models
         for model in self.models_:
             model.fit(X, y)
-
+        #self.__fittime__ = time.time() - start
         return self
     
     #Now we do the predictions for cloned models and average them
@@ -62,7 +223,7 @@ class AveragingModels(BaseEstimator, RegressorMixin, TransformerMixin):
         return np.mean(predictions, axis=1)
 
 class StackingAveragedModels(BaseEstimator, RegressorMixin, TransformerMixin):
-    def __init__(self, base_models, meta_model, n_folds=5):
+    def __init__(self, base_models, meta_model, cv=5):
         if base_models is None:
             self.base_models = (ENet, GBoost, KRR, model_xgb)
         else:
@@ -71,14 +232,14 @@ class StackingAveragedModels(BaseEstimator, RegressorMixin, TransformerMixin):
             self.meta_model = meta_lasso 
         else:
             self.meta_model = meta_model
-        self.n_folds = n_folds
+        self.cv = cv
 
     # We again fit the data on clones of the original models
     def fit(self, X, y):
         self.base_models_ = [list() for x in self.base_models]
         self.meta_model_ = clone(self.meta_model)
-        kfold = KFold(n_splits=self.n_folds, shuffle=True, random_state=156)
-
+        #kfold = KFold(n_splits=self.n_folds, shuffle=True, random_state=156)
+        kfold = self.cv
         # Train cloned base models then create out-of-fold predictions
         # that are needed to train the cloned meta-model
         out_of_fold_predictions = np.zeros((X.shape[0], len(self.base_models)))
@@ -101,23 +262,5 @@ class StackingAveragedModels(BaseEstimator, RegressorMixin, TransformerMixin):
             np.column_stack([model.predict(X) for model in base_models]).mean(axis=1)
             for base_models in self.base_models_ ])
         return self.meta_model_.predict(meta_features)
-
-#params = [{'max_depth':[1,2,3], 'learning_rate':[0.01,0.05,0.1,0.5,1], 'n_estimators':[100,200,300,500,1000]}]
-#tune_model = GridSearchCV(xgb.XGBRegressor(), param_grid=params, scoring='neg_mean_squared_error', cv=5, return_train_score=True, n_jobs=4).fit(train_M, target)
-#cv_results = tune_model.cv_results_
-#best_index = tune_model.best_index_
-#best_param = tune_model.best_params_
-#model_xgb = tune_model.best_estimator_
-#train_mean_score = -cv_results.get('mean_train_score')[best_index]
-#test_mean_score = -cv_results.get('mean_test_score')[best_index]
-#test_std_score = cv_results.get('std_test_score')[best_index]
-#print("best model:-----------", model_xgb)
-#print(best_index, best_param)
-#print("\ntrain_mean_score:", train_mean_score)
-#print("test_mean_score", test_mean_score, "worst +3std:", test_mean_score+3*test_std_score)
-#print("test-train diff score", test_mean_score-train_mean_score, "test std:", test_std_score)
-#xgb_predict = np.expm1(model_xgb.predict(test_M))
-#submission = pd.DataFrame({"Id": test.Id, "SalePrice": xgb_predict})
-#subname = "xgbreg_{}_{}_{}.csv".format(best_param['max_depth'], best_param['n_estimators'], best_param['learning_rate'])
 
 
