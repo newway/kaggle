@@ -5,7 +5,7 @@ warnings.warn = ignore_warn #ignore annoying warning (from sklearn and seaborn)
 import pandas as pd
 import numpy as np
 import time
-from sklearn.linear_model import LinearRegression, ElasticNet, Lasso,  BayesianRidge, LassoLarsIC, Ridge, PassiveAggressiveRegressor, SGDRegressor
+from sklearn.linear_model import LinearRegression, ElasticNet, Lasso,  BayesianRidge, LassoCV,RidgeCV, Ridge, PassiveAggressiveRegressor, SGDRegressor
 from sklearn import svm, tree, neighbors, gaussian_process
 from sklearn.ensemble import GradientBoostingRegressor,AdaBoostRegressor,BaggingRegressor, ExtraTreesRegressor, RandomForestRegressor
 from sklearn.kernel_ridge import KernelRidge
@@ -18,8 +18,8 @@ import xgboost as xgb
 import lightgbm as lgb
 
 lasso = make_pipeline(RobustScaler(), Lasso(alpha =0.0005, random_state=1))
-meta_lasso = Lasso(alpha =0.0005, random_state=1)
-meta_ridge = Ridge(alpha =0.0005, random_state=1)
+meta_lasso = Lasso(alpha =0.05, random_state=1)
+meta_ridge = Ridge(alpha =0.05, random_state=1)
 ENet = make_pipeline(RobustScaler(), ElasticNet(alpha=0.0005, l1_ratio=.9, random_state=3))
 KRR = KernelRidge(alpha=0.6, kernel='polynomial', degree=2, coef0=2.5)
 GBoost = GradientBoostingRegressor(n_estimators=3000, learning_rate=0.05,
@@ -38,6 +38,81 @@ model_lgb = lgb.LGBMRegressor(objective='regression',num_leaves=5,
                               bagging_freq = 5, feature_fraction = 0.2319,
                               feature_fraction_seed=9, bagging_seed=9,
                               min_data_in_leaf =6, min_sum_hessian_in_leaf = 11)
+
+
+class AveragingModels(BaseEstimator, RegressorMixin, TransformerMixin):
+    def __init__(self, models):
+        if models is not None:
+            self.models = models
+        else:
+            self.models = (ENet, GBoost, KRR, lasso, model_xgb)
+        
+    # we define clones of the original models to fit the data in
+    def fit(self, X, y):
+        self.models_ = [clone(x) for x in self.models]
+        #start = time.time()
+        # Train cloned base models
+        for model in self.models_:
+            model.fit(X, y)
+        #self.__fittime__ = time.time() - start
+        return self
+    
+    #Now we do the predictions for cloned models and average them
+    def predict(self, X):
+        predictions = np.column_stack([
+            model.predict(X) for model in self.models_
+        ])
+        return np.mean(predictions, axis=1)
+
+class StackingAveragedModels(BaseEstimator, RegressorMixin, TransformerMixin):
+    def __init__(self, base_models, meta_model, cv=5):
+        if base_models is None:
+            self.base_models = (ENet, GBoost, KRR, model_xgb)
+        else:
+            self.base_models = base_models
+        if meta_model is None:
+            self.meta_model = meta_lasso 
+        else:
+            self.meta_model = meta_model
+        self.cv = cv
+
+    # We again fit the data on clones of the original models
+    def fit(self, X, y):
+        self.base_models_ = [list() for x in self.base_models]
+        self.meta_model_ = clone(self.meta_model)
+        kfold = KFold(n_splits=self.cv, shuffle=True, random_state=156)
+        #kfold = self.cv
+        # Train cloned base models then create out-of-fold predictions
+        # that are needed to train the cloned meta-model
+        out_of_fold_predictions = np.zeros((X.shape[0], len(self.base_models)))
+        for i, model in enumerate(self.base_models):
+            for train_index, holdout_index in kfold.split(X, y):
+                instance = clone(model)
+                self.base_models_[i].append(instance)
+                instance.fit(X[train_index], y[train_index])
+                y_pred = instance.predict(X[holdout_index])
+                out_of_fold_predictions[holdout_index, i] = y_pred
+
+        # Now train the cloned  meta-model using the out-of-fold predictions as new feature
+        self.meta_model_ = self.meta_model_.fit(out_of_fold_predictions, y)
+        try:
+            coef = pd.Series(self.meta_model_.coef_, index = [ m.__class__.__name__ for m in self.base_models ])
+            print("stack index coef:", coef)    #, coef[coef!=0].index
+        except (AttributeError):
+            pass
+        return self
+
+    #Do the predictions of all base models on the test data and use the averaged predictions as
+    #meta-features for the final prediction which is done by the meta-model
+    def predict(self, X):
+        meta_features = np.column_stack([
+            np.column_stack([model.predict(X) for model in base_models]).mean(axis=1)
+            for base_models in self.base_models_ ])
+        return self.meta_model_.predict(meta_features)
+
+def rmsle(y, y_pred):
+    return np.sqrt(mean_squared_error(y, y_pred))
+
 REG = [
     #GLM - remove linear models, since this is a regressor algorithm
     ('brr', BayesianRidge()),
@@ -45,7 +120,7 @@ REG = [
     ('lasso', Lasso()),
     ('lr', LinearRegression()),
     ('par', PassiveAggressiveRegressor()),
-    ('rr', Ridge()),
+    ('ridge', Ridge()),
     ('sgd', SGDRegressor()),
 
     #Gaussian Processes
@@ -87,6 +162,7 @@ ESTS_PARAM_GRID = {
                                    'max_depth':[4], 'max_features':['sqrt'],
                                    'min_samples_leaf':[15], 'min_samples_split':[10],
                                    'loss':['huber'], 'random_state':[5]}],
+    'ridge':    [{'alpha':[10],'tol':[0.0001],'solver':['auto'], 'random_state':[1]}]
 }
 
 MLA_columns = ['Name', 'Test Score Mean', 'Train Score Mean', 'Test Train Diff', 'Test Score +-3Std', 'Parameters', 'Selected Columns', 'Fit Time', 'TrainData','TestData','Mode']
@@ -135,7 +211,7 @@ def ensemble_regression(data, target, test, all_columns, featureFromModel=False,
         MLA_compare.loc[row_index, 'Fit Time'] = cv_results.get('mean_fit_time')[best_index]
         MLA_compare.loc[row_index, 'Train Score Mean'] = cv_results.get('mean_train_score')[best_index]
         MLA_compare.loc[row_index, 'Test Score Mean'] = cv_results.get('mean_test_score')[best_index]   # == tune_model.best_score_
-        MLA_compare.loc[row_index, 'Test Train Diff'] = MLA_compare.loc[row_index, 'Test Score Mean'] - MLA_compare.loc[row_index, 'Train Score Mean']
+        MLA_compare.loc[row_index, 'Test Train Diff'] = rmsle(target, MLA_compare.loc[row_index, 'Mode'].predict(data)) #MLA_compare.loc[row_index, 'Test Score Mean'] - MLA_compare.loc[row_index, 'Train Score Mean']
         MLA_compare.loc[row_index, 'Test Score +-3Std'] = (-MLA_compare.loc[row_index, 'Test Score Mean']-3*cv_results.get('std_test_score')[best_index], -MLA_compare.loc[row_index, 'Test Score Mean']+3*cv_results.get('std_test_score')[best_index])   #let's make +-3Std minus for ascending order
 
         base_ests.append((name, tune_model.best_estimator_))
@@ -146,7 +222,7 @@ def ensemble_regression(data, target, test, all_columns, featureFromModel=False,
         avg_base = [y for x,y in base_ests]
         alg = AveragingModels(models=avg_base)
         alg.fit(data, target)
-        MLA_compare.loc[row_index, 'Parameters'] = 'average'
+        MLA_compare.loc[row_index, 'Parameters'] = 'avg{}'.format(len(base_ests))
         MLA_compare.loc[row_index, 'Name'] = 'AverageModel'
         MLA_compare.loc[row_index, 'Mode'] = alg
         MLA_compare.loc[row_index, 'Selected Columns'] = all_columns.tolist()
@@ -156,21 +232,23 @@ def ensemble_regression(data, target, test, all_columns, featureFromModel=False,
         MLA_compare.loc[row_index, 'Train Score Mean'] = cv_results['train_score'].mean()
         MLA_compare.loc[row_index, 'Test Score Mean'] = cv_results['test_score'].mean()
         test_score_std = cv_results['test_score'].std()
-        MLA_compare.loc[row_index, 'Test Train Diff'] = MLA_compare.loc[row_index, 'Test Score Mean'] - MLA_compare.loc[row_index, 'Train Score Mean']
+        MLA_compare.loc[row_index, 'Test Train Diff'] = rmsle(target, MLA_compare.loc[row_index, 'Mode'].predict(data)) # MLA_compare.loc[row_index, 'Test Score Mean'] - MLA_compare.loc[row_index, 'Train Score Mean']
         MLA_compare.loc[row_index, 'Test Score +-3Std'] = (-MLA_compare.loc[row_index, 'Test Score Mean']-3*test_score_std, -MLA_compare.loc[row_index, 'Test Score Mean']+3*test_score_std)
         MLA_compare.loc[row_index, 'TestData'] = test
         row_index+=1
         stack_models = []
-        meta_model = meta_lasso
+        stack_base = {'enet':{}, 'gbr':{}, 'krr':{}, 'rfr':{}}
+        meta_model = RandomForestRegressor(n_estimators=100, random_state=1) #  #RandomForestRegressor(n_estimators=100, random_state=1, max_depth=3) # LassoCV(alphas=[0, 0.1, 0.01, 0.0005, 1, 5]) #
         for x,y in base_ests:
-            if y.__class__.__name__ != meta_model.__class__.__name__:
+            if x in stack_base:
+                stack_base[x] = y
                 stack_models.append(y)
         #stack_models = [y for x,y in base_ests[1:]]
         #meta_model = base_ests[0][1]
         print("StackingAveragedModels base model:", len(stack_models), "\nmeta model:", meta_model)
-        alg = StackingAveragedModels(base_models=stack_models, meta_model=meta_model, cv=cv_split)
+        alg = StackingAveragedModels(base_models=stack_models, meta_model=meta_model)
         alg.fit(data, target)
-        MLA_compare.loc[row_index, 'Parameters'] = 'stack average'
+        MLA_compare.loc[row_index, 'Parameters'] = str(alg.meta_model_.get_params())
         MLA_compare.loc[row_index, 'Name'] = 'StackingAveragedModels'
         MLA_compare.loc[row_index, 'Mode'] = alg
         MLA_compare.loc[row_index, 'Selected Columns'] = all_columns.tolist()
@@ -180,7 +258,7 @@ def ensemble_regression(data, target, test, all_columns, featureFromModel=False,
         MLA_compare.loc[row_index, 'Train Score Mean'] = cv_results['train_score'].mean()
         MLA_compare.loc[row_index, 'Test Score Mean'] = cv_results['test_score'].mean()
         test_score_std = cv_results['test_score'].std()
-        MLA_compare.loc[row_index, 'Test Train Diff'] = MLA_compare.loc[row_index, 'Test Score Mean'] - MLA_compare.loc[row_index, 'Train Score Mean']
+        MLA_compare.loc[row_index, 'Test Train Diff'] = rmsle(target, MLA_compare.loc[row_index, 'Mode'].predict(data)) # MLA_compare.loc[row_index, 'Test Score Mean'] - MLA_compare.loc[row_index, 'Train Score Mean']
         MLA_compare.loc[row_index, 'Test Score +-3Std'] = (-MLA_compare.loc[row_index, 'Test Score Mean']-3*test_score_std, -MLA_compare.loc[row_index, 'Test Score Mean']+3*test_score_std)
         MLA_compare.loc[row_index, 'TestData'] = test
         row_index+=1
@@ -188,6 +266,7 @@ def ensemble_regression(data, target, test, all_columns, featureFromModel=False,
     # get the best mode
     MLA_compare[['Train Score Mean','Test Score Mean']] = -1*MLA_compare[['Train Score Mean','Test Score Mean']]
     MLA_compare.sort_values(by = ['Test Score Mean', 'Test Train Diff'], ascending = True, inplace = True)
+    #MLA_compare.reset_index(drop=True, inplace = True)
     print_columns = MLA_columns[:-4]
     print(MLA_compare[print_columns], '\n')
     for i in range(row_index):
@@ -196,71 +275,9 @@ def ensemble_regression(data, target, test, all_columns, featureFromModel=False,
     ensemble_name = MLA_compare.iloc[0]['Name'][:5] + MLA_compare.iloc[0]['Parameters'].replace(':','_') + feature_name.format(len(MLA_compare.iloc[0]['Selected Columns']))
     model = MLA_compare.iloc[0]["Mode"]
     test_data = MLA_compare.iloc[0]['TestData']
-    return (model, model.predict(test_data), ensemble_name)
-
-class AveragingModels(BaseEstimator, RegressorMixin, TransformerMixin):
-    def __init__(self, models):
-        if models is not None:
-            self.models = models
-        else:
-            self.models = (ENet, GBoost, KRR, lasso, model_xgb)
-        
-    # we define clones of the original models to fit the data in
-    def fit(self, X, y):
-        self.models_ = [clone(x) for x in self.models]
-        #start = time.time()
-        # Train cloned base models
-        for model in self.models_:
-            model.fit(X, y)
-        #self.__fittime__ = time.time() - start
-        return self
-    
-    #Now we do the predictions for cloned models and average them
-    def predict(self, X):
-        predictions = np.column_stack([
-            model.predict(X) for model in self.models_
-        ])
-        return np.mean(predictions, axis=1)
-
-class StackingAveragedModels(BaseEstimator, RegressorMixin, TransformerMixin):
-    def __init__(self, base_models, meta_model, cv=5):
-        if base_models is None:
-            self.base_models = (ENet, GBoost, KRR, model_xgb)
-        else:
-            self.base_models = base_models
-        if meta_model is None:
-            self.meta_model = meta_lasso 
-        else:
-            self.meta_model = meta_model
-        self.cv = cv
-
-    # We again fit the data on clones of the original models
-    def fit(self, X, y):
-        self.base_models_ = [list() for x in self.base_models]
-        self.meta_model_ = clone(self.meta_model)
-        #kfold = KFold(n_splits=self.n_folds, shuffle=True, random_state=156)
-        kfold = self.cv
-        # Train cloned base models then create out-of-fold predictions
-        # that are needed to train the cloned meta-model
-        out_of_fold_predictions = np.zeros((X.shape[0], len(self.base_models)))
-        for i, model in enumerate(self.base_models):
-            for train_index, holdout_index in kfold.split(X, y):
-                instance = clone(model)
-                self.base_models_[i].append(instance)
-                instance.fit(X[train_index], y[train_index])
-                y_pred = instance.predict(X[holdout_index])
-                out_of_fold_predictions[holdout_index, i] = y_pred
-
-        # Now train the cloned  meta-model using the out-of-fold predictions as new feature
-        self.meta_model_.fit(out_of_fold_predictions, y)
-        return self
-
-    #Do the predictions of all base models on the test data and use the averaged predictions as
-    #meta-features for the final prediction which is done by the meta-model
-    def predict(self, X):
-        meta_features = np.column_stack([
-            np.column_stack([model.predict(X) for model in base_models]).mean(axis=1)
-            for base_models in self.base_models_ ])
-        return self.meta_model_.predict(meta_features)
-
+    #prediction = np.asarray(MLA_compare.iloc[row_index-2]['Mode'].predict(test_data))*0.5 + np.asarray(MLA_compare.iloc[row_index-1]['Mode'].predict(test_data))*0.5 
+    prediction = MLA_compare.iloc[0]['Mode'].predict(test_data)
+    #avg_weights = [0.6,0.1,0.1,0.1,0.1]
+    #prediction = np.sum(np.column_stack([avg_weights[i]*np.asarray(MLA_compare.loc[i, 'Mode'].predict(test_data)) for i in range(row_index)]),axis=1)
+    return (model, prediction, ensemble_name)
 
