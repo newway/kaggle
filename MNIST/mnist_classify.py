@@ -8,7 +8,7 @@ from sklearn.manifold import TSNE
 from sklearn.decomposition import PCA
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis as LDA
 from sklearn.model_selection import train_test_split
-
+from sklearn.metrics import confusion_matrix
 from keras.utils.np_utils import to_categorical # convert to one-hot-encoding
 from keras.models import Sequential
 from keras.layers import Dense, Dropout, Flatten, Conv2D, MaxPool2D
@@ -37,7 +37,7 @@ test = test.values.reshape(-1, 28, 28, 1)
 Y_train = to_categorical(target, num_classes=10)
 
 random_seed = 2
-n_epoch = 30
+n_epoch = 2
 batch_size = 128
 n_filter1 = 32
 n_filter2 = 64
@@ -86,6 +86,12 @@ end = time.time()
 score = model.evaluate(X_val, Y_val, batch_size=batch_size)
 print("train time(min):", (end-start)/60)
 print("validation score: ", score)
+Y_pred = model.predict(X_val)
+Y_pred_classes = np.argmax(Y_pred, axis=1)
+Y_true = np.argmax(Y_val, axis=1)
+confusion_mat = confusion_matrix(Y_true, Y_pred_classes)
+print("validation confusion matrix:\n", confusion_mat)
+
 results = model.predict(test)
 results = np.argmax(results, axis=1)
 
