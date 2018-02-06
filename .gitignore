@@ -3,6 +3,9 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+#tensorflow model, zip file
+*.zip
+*.h5
 # C extensions
 *.so
 *.csv
