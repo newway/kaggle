@@ -123,15 +123,16 @@ def generator(xtr, xval, ytr, yval, bt_size):
     # we create two instances with the same arguments
     data_gen_args = dict(horizontal_flip=True,
                          vertical_flip=True,
-                         rotation_range=90.,
-                         width_shift_range=0.1,
-                         height_shift_range=0.1,
-                         zoom_range=0.2)
-    SEED = 7
+                         rotation_range=40,
+                         width_shift_range=0.2,
+                         height_shift_range=0.2,
+                         zoom_range=0.2,
+                         shear_range=0.5,fill_mode='reflect')
+    SEED = 37
     image_datagen = ImageDataGenerator(**data_gen_args)
     mask_datagen = ImageDataGenerator(**data_gen_args)
-    image_datagen.fit(xtr) 
-    mask_datagen.fit(ytr)   #, augment=True, seed=7
+    image_datagen.fit(xtr, augment=True, seed=SEED) 
+    mask_datagen.fit(ytr, augment=True, seed=SEED)   #, augment=True, seed=7
     image_generator = image_datagen.flow(xtr, batch_size=bt_size, seed=SEED)
     mask_generator = mask_datagen.flow(ytr, batch_size=bt_size, seed=SEED)
     train_generator = zip(image_generator, mask_generator)
@@ -139,8 +140,8 @@ def generator(xtr, xval, ytr, yval, bt_size):
     val_gen_args = dict()
     image_datagen_val = ImageDataGenerator(**val_gen_args)
     mask_datagen_val = ImageDataGenerator(**val_gen_args)
-    image_datagen_val.fit(xval)
-    mask_datagen_val.fit(yval)
+    image_datagen_val.fit(xval, augment=True, seed=SEED)
+    mask_datagen_val.fit(yval, augment=True, seed=SEED)
     image_generator_val = image_datagen_val.flow(xval, batch_size=bt_size, seed=SEED)
     mask_generator_val = mask_datagen_val.flow(yval, batch_size=bt_size, seed=SEED)
     val_generator = zip(image_generator_val, mask_generator_val)
@@ -154,8 +155,9 @@ def mean_iou_val(y_true, y_pred):
     y_pred_ = tf.reshape(y_pred, [-1])      # probability
     inter = tf.reduce_sum(tf.multiply(y_true_, y_pred_))
     union = tf.reduce_sum(tf.subtract( tf.add(y_true_, y_pred_), tf.multiply(y_true_, y_pred_) ))
-
-    return tf.div(inter, union)
+    smooth = 0.0001
+    return tf.div(tf.add(smooth, inter), tf.add(smooth, union))
+    #return tf.div(inter, union)
     #y_true_ = tf.reshape(y_true, [-1])
     #y_true_ = tf.to_int32(y_true_)
     #y_pred_ = tf.to_int32(y_pred > 0.5)
@@ -208,8 +210,7 @@ def rle_encoding(x):
 def prob_to_rles(x, cutoff=0.5):
     #or rescale to (0,1)
     m = np.amax(x)
-    if (cutoff >= m):
-        cutoff = m*0.5
+    cutoff = m*cutoff
     lab_img = label(x > cutoff)
     #while(lab_img.max()<1):
     #    cutoff = cutoff - 0.05
@@ -223,11 +224,12 @@ if __name__ == '__main__':
     SEED = 7
     #random.seed = SEED
     #np.random.seed = SEED
-    N_EPOCHS = 50
-    BATCH_SIZE = 32
+    N_EPOCHS = 5
+    BATCH_SIZE = 16
+    cutoff = 0.5
     print(IMG_SIZE, SEED, N_EPOCHS, BATCH_SIZE)
     X_train, Y_train, X_test, sizes_test = load_data(TRAIN_PATH, TEST_PATH, IMG_SIZE)
-    xtr, xval, ytr, yval = train_test_split(X_train, Y_train, test_size=0.1, random_state=7)
+    xtr, xval, ytr, yval = train_test_split(X_train, Y_train, test_size=0.1, random_state=SEED)
     #xtr, xval = X_train[:int(X_train.shape[0]*0.9)], X_train[int(X_train.shape[0]*0.9):]
     #ytr, yval = Y_train[:int(Y_train.shape[0]*0.9)], Y_train[int(Y_train.shape[0]*0.9):]
     print(np.shape(xtr), np.shape(ytr), np.shape(xval), np.shape(yval))
@@ -235,22 +237,23 @@ if __name__ == '__main__':
     #print(np.any(Y_train[0]), np.sum(Y_train[0]))
     #print(np.any(ytr[0]),np.any(ytr[1]), np.sum(ytr[1]), np.shape(ytr[0]))
 
-    #model = load_model('final_model-256-30-16-12.18.h5', custom_objects={"mean_iou_loss": mean_iou_loss, "mean_iou_val": mean_iou_val})
+    #model = load_model('median-256-5-16.h5', custom_objects={"mean_iou_val": mean_iou_val})
     
     model = Unet(IMG_SIZE, 0.5)
+    model.compile(optimizer='adam', loss='binary_crossentropy', metrics=[mean_iou_val])
     model.compile(optimizer='adam', loss=mean_iou_loss, metrics=[mean_iou_val])
     start = time.time()
     earlystopper = EarlyStopping(patience=5, verbose=1)
     model_name = 'median-{}-{}-{}.h5'.format(IMG_SIZE, N_EPOCHS, BATCH_SIZE)
     checkpointer = ModelCheckpoint(model_name, verbose=1, save_best_only=True)
     #model.fit(xtr, ytr, batch_size=BATCH_SIZE, epochs=N_EPOCHS, validation_data=(xval,yval), verbose=2, callbacks=[earlystopper, checkpointer])
-    model.fit_generator(train_generator, validation_data=val_generator, validation_steps=len(xval)//BATCH_SIZE, steps_per_epoch=len(xtr)//BATCH_SIZE, epochs=N_EPOCHS,  verbose=2, callbacks=[earlystopper, checkpointer])
+    model.fit_generator(train_generator, validation_data=val_generator, validation_steps=15, steps_per_epoch=200, epochs=N_EPOCHS,  verbose=2, callbacks=[earlystopper, checkpointer])
     end = time.time()
     print("model training total time(min):", (end-start)/60.0)
     now = datetime.datetime.now()
     #print now.year, now.month, now.day, now.hour, now.minute, now.second
     model.save('final_model-{}-{}-{}-{}.{}.h5'.format(IMG_SIZE, N_EPOCHS, BATCH_SIZE, now.hour, now.minute))
-    #json_string = model.to_json()
+    ##json_string = model.to_json()
 
     preds_test = model.predict(X_test, verbose=1)
     #print(tf.count_nonzero(tf.greater(preds_test[0], tf.constant(0.5))))
@@ -258,12 +261,11 @@ if __name__ == '__main__':
     #exit()
     preds_test_upsampled = []
     for i in range(len(preds_test)):
-        preds_test_upsampled.append(resize(np.squeeze(preds_test[i]), (sizes_test[i][0], sizes_test[i][1])))
+        preds_test_upsampled.append(resize(np.squeeze(preds_test[i]), (sizes_test[i][0], sizes_test[i][1]), mode='constant', preserve_range=True))
     #print(tf.shape(preds_test_upsampled))
 
     new_test_ids = []
     rles = []
-    cutoff = 0.5
     for n, id_ in enumerate(test_ids):
         rle = list(prob_to_rles(preds_test_upsampled[n], cutoff=cutoff))  #rle_encoding(preds_test_upsampled[n]) 
         rles.extend(rle)
