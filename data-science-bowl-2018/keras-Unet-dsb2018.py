@@ -123,12 +123,12 @@ def generator(xtr, xval, ytr, yval, bt_size):
     # we create two instances with the same arguments
     data_gen_args = dict(horizontal_flip=True,
                          vertical_flip=True,
-                         rotation_range=40,
+                         rotation_range=45,
                          width_shift_range=0.2,
                          height_shift_range=0.2,
                          zoom_range=0.2,
                          shear_range=0.5,fill_mode='reflect')
-    SEED = 37
+    SEED = 57
     image_datagen = ImageDataGenerator(**data_gen_args)
     mask_datagen = ImageDataGenerator(**data_gen_args)
     image_datagen.fit(xtr, augment=True, seed=SEED) 
@@ -155,7 +155,7 @@ def mean_iou_val(y_true, y_pred):
     y_pred_ = tf.reshape(y_pred, [-1])      # probability
     inter = tf.reduce_sum(tf.multiply(y_true_, y_pred_))
     union = tf.reduce_sum(tf.subtract( tf.add(y_true_, y_pred_), tf.multiply(y_true_, y_pred_) ))
-    smooth = 0.0001
+    smooth = 0.00001
     return tf.div(tf.add(smooth, inter), tf.add(smooth, union))
     #return tf.div(inter, union)
     #y_true_ = tf.reshape(y_true, [-1])
@@ -209,8 +209,8 @@ def rle_encoding(x):
 
 def prob_to_rles(x, cutoff=0.5):
     #or rescale to (0,1)
-    m = np.amax(x)
-    cutoff = m*cutoff
+    #m = np.amax(x)
+    #cutoff = m*cutoff
     lab_img = label(x > cutoff)
     #while(lab_img.max()<1):
     #    cutoff = cutoff - 0.05
@@ -225,7 +225,7 @@ if __name__ == '__main__':
     #random.seed = SEED
     #np.random.seed = SEED
     N_EPOCHS = 5
-    BATCH_SIZE = 16
+    BATCH_SIZE = 32
     cutoff = 0.5
     print(IMG_SIZE, SEED, N_EPOCHS, BATCH_SIZE)
     X_train, Y_train, X_test, sizes_test = load_data(TRAIN_PATH, TEST_PATH, IMG_SIZE)
@@ -237,22 +237,22 @@ if __name__ == '__main__':
     #print(np.any(Y_train[0]), np.sum(Y_train[0]))
     #print(np.any(ytr[0]),np.any(ytr[1]), np.sum(ytr[1]), np.shape(ytr[0]))
 
-    #model = load_model('median-256-5-16.h5', custom_objects={"mean_iou_val": mean_iou_val})
+    #model = load_model('median-256-5-32.h5', custom_objects={"mean_iou_val": mean_iou_val})
     
     model = Unet(IMG_SIZE, 0.5)
     model.compile(optimizer='adam', loss='binary_crossentropy', metrics=[mean_iou_val])
-    model.compile(optimizer='adam', loss=mean_iou_loss, metrics=[mean_iou_val])
+    #model.compile(optimizer='adam', loss=mean_iou_loss, metrics=[mean_iou_val])
     start = time.time()
     earlystopper = EarlyStopping(patience=5, verbose=1)
     model_name = 'median-{}-{}-{}.h5'.format(IMG_SIZE, N_EPOCHS, BATCH_SIZE)
     checkpointer = ModelCheckpoint(model_name, verbose=1, save_best_only=True)
     #model.fit(xtr, ytr, batch_size=BATCH_SIZE, epochs=N_EPOCHS, validation_data=(xval,yval), verbose=2, callbacks=[earlystopper, checkpointer])
-    model.fit_generator(train_generator, validation_data=val_generator, validation_steps=15, steps_per_epoch=200, epochs=N_EPOCHS,  verbose=2, callbacks=[earlystopper, checkpointer])
+    model.fit_generator(train_generator, validation_data=val_generator, validation_steps=20, steps_per_epoch=200, epochs=N_EPOCHS,  verbose=2, callbacks=[earlystopper, checkpointer])
     end = time.time()
     print("model training total time(min):", (end-start)/60.0)
     now = datetime.datetime.now()
-    #print now.year, now.month, now.day, now.hour, now.minute, now.second
-    model.save('final_model-{}-{}-{}-{}.{}.h5'.format(IMG_SIZE, N_EPOCHS, BATCH_SIZE, now.hour, now.minute))
+    ##print now.year, now.month, now.day, now.hour, now.minute, now.second
+    #model.save('final_model-{}-{}-{}-{}.{}.h5'.format(IMG_SIZE, N_EPOCHS, BATCH_SIZE, now.hour, now.minute))
     ##json_string = model.to_json()
 
     preds_test = model.predict(X_test, verbose=1)
